@@ -859,6 +859,28 @@ class FastAPI(Starlette):
                 """
             ),
         ] = True,
+        mcp_url: Annotated[
+            str | None,
+            Doc(
+                """
+                The path to mount the MCP (Model Context Protocol) server.
+
+                When set, FastAPI automatically generates an MCP server exposing
+                all routes (with `include_in_schema=True`) as callable tools.
+                Set to `None` (the default) to disable MCP support.
+
+                Requires the `mcp` extra: `pip install fastapi[mcp]`.
+
+                **Example**
+
+                ```python
+                from fastapi import FastAPI
+
+                app = FastAPI(mcp_url="/mcp")
+                ```
+                """
+            ),
+        ] = None,
         **extra: Annotated[
             Any,
             Doc(
@@ -882,6 +904,7 @@ class FastAPI(Starlette):
         self.root_path_in_servers = root_path_in_servers
         self.docs_url = docs_url
         self.redoc_url = redoc_url
+        self.mcp_url = mcp_url
         self.swagger_ui_oauth2_redirect_url = swagger_ui_oauth2_redirect_url
         self.swagger_ui_init_oauth = swagger_ui_init_oauth
         self.swagger_ui_parameters = swagger_ui_parameters
@@ -1152,6 +1175,15 @@ class FastAPI(Starlette):
                 )
 
             self.add_route(self.redoc_url, redoc_html, include_in_schema=False)
+
+        if self.mcp_url:
+            try:
+                from fastapi.mcp.server import MCPApp
+            except ImportError as exc:
+                raise ImportError(
+                    "Install fastapi[mcp] to use MCP support: pip install fastapi[mcp]"
+                ) from exc
+            self.mount(self.mcp_url, MCPApp(fastapi_app=self))
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if self.root_path:
