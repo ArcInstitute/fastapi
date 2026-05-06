@@ -1,3 +1,4 @@
+import re
 from typing import Any
 
 from mcp.types import Tool
@@ -41,12 +42,24 @@ def _build_input_schema(
     if request_body:
         content = request_body.get("content", {})
         json_content = content.get("application/json", {})
-        body_schema = json_content.get("schema", {})
-        if "$ref" in body_schema:
-            body_schema = _resolve_ref(body_schema["$ref"], full_schema)
-        properties["body"] = body_schema
-        if request_body.get("required"):
-            required.append("body")
+        if json_content:
+            body_schema = json_content.get("schema", {})
+            if "$ref" in body_schema:
+                body_schema = _resolve_ref(body_schema["$ref"], full_schema)
+            properties["body"] = body_schema
+            if request_body.get("required"):
+                required.append("body")
+        else:
+            form_content = content.get("multipart/form-data") or content.get(
+                "application/x-www-form-urlencoded"
+            )
+            if form_content:
+                form_schema = form_content.get("schema", {})
+                if "$ref" in form_schema:
+                    form_schema = _resolve_ref(form_schema["$ref"], full_schema)
+                for field_name, field_schema in form_schema.get("properties", {}).items():
+                    properties[field_name] = dict(field_schema)
+                required.extend(form_schema.get("required", []))
 
     result: dict[str, Any] = {"type": "object", "properties": properties}
     if required:
@@ -68,7 +81,9 @@ def get_mcp_tools(
         if not route.include_in_schema:
             continue
 
-        path_item = paths.get(route.path, {})
+        # OpenAPI strips converter syntax ({name:type} → {name}), so normalize
+        openapi_path = re.sub(r"\{(\w+):[^}]+\}", r"{\1}", route.path)
+        path_item = paths.get(openapi_path, {})
         for method in route.methods or []:
             method_lower = method.lower()
             operation = path_item.get(method_lower)

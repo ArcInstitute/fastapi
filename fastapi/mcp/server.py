@@ -15,6 +15,7 @@ from starlette.routing import BaseRoute
 from starlette.types import Receive, Scope, Send
 
 from fastapi.mcp.generator import get_mcp_tools
+from fastapi.params import File, Form
 from fastapi.routing import APIRoute
 
 if TYPE_CHECKING:
@@ -81,7 +82,7 @@ def _build_server(fastapi_app: Any) -> Server[None, Any]:
             return [TextContent(type="text", text=f"Tool not found: {name}")]
 
         method = next(iter(route.methods or ["GET"]))
-        path, query_params, body = _extract_call_parts(route, arguments)
+        path, query_params, body, is_form = _extract_call_parts(route, arguments)
 
         try:
             async with httpx.AsyncClient(
@@ -92,7 +93,8 @@ def _build_server(fastapi_app: Any) -> Server[None, Any]:
                     method=method,
                     url=path,
                     params=query_params or None,
-                    json=body,
+                    data=body if is_form else None,
+                    json=None if is_form else body,
                 )
             return [TextContent(type="text", text=resp.text)]
         except Exception as exc:
@@ -111,26 +113,29 @@ def _find_route(routes: list[BaseRoute], unique_id: str) -> APIRoute | None:
 def _extract_call_parts(
     route: APIRoute,
     arguments: dict[str, Any],
-) -> tuple[str, dict[str, Any], Any]:
-    """Return (rendered_path, query_params, body) from tool arguments."""
+) -> tuple[str, dict[str, Any], Any, bool]:
+    """Return (rendered_path, query_params, body_or_form_data, is_form) from tool arguments."""
     path = route.path
     query_params: dict[str, Any] = {}
     body: Any = None
 
-    path_param_names = set(re.findall(r"\{(\w+)\}", path))
-    query_param_names: set[str] = set()
-
-    for dep in route.dependant.path_params:
-        path_param_names.add(dep.name)
-    for dep in route.dependant.query_params:
-        query_param_names.add(dep.name)
+    path_param_names: set[str] = {dep.name for dep in route.dependant.path_params}
+    form_param_names: set[str] = {
+        dep.name
+        for dep in route.dependant.body_params
+        if isinstance(dep.field_info, (Form, File))
+    }
+    is_form = bool(form_param_names)
+    form_data: dict[str, Any] = {}
 
     for key, value in arguments.items():
         if key == "body":
             body = value
         elif key in path_param_names:
-            path = path.replace(f"{{{key}}}", str(value))
+            path = re.sub(r"\{" + re.escape(key) + r"(?::[^}]+)?\}", str(value), path)
+        elif key in form_param_names:
+            form_data[key] = value
         else:
             query_params[key] = value
 
-    return path, query_params, body
+    return path, query_params, form_data if is_form else body, is_form

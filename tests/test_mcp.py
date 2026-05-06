@@ -236,3 +236,80 @@ async def test_mcp_path_params() -> None:
     text = result["result"]["content"][0]["text"]
     data = json.loads(text)
     assert data["item_id"] == 42
+
+
+@pytest.mark.anyio
+async def test_mcp_path_converter() -> None:
+    app = FastAPI(mcp_url="/mcp")
+
+    @app.get("/files/{file_path:path}", summary="Get file")
+    async def get_file(file_path: str) -> dict[str, str]:
+        return {"file_path": file_path}
+
+    async with make_client(app) as client:
+        tools = await _list_tools(client, "/mcp")
+        get_tool = next((t for t in tools if "get_file" in t["name"]), None)
+        assert get_tool is not None, "Path-converter route should appear as MCP tool"
+        assert "file_path" in get_tool["inputSchema"]["properties"]
+
+        call_resp = await _mcp_post(
+            client,
+            "/mcp",
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": get_tool["name"],
+                    "arguments": {"file_path": "dir/sub/file.txt"},
+                },
+            },
+        )
+    assert call_resp.status_code == 200
+    result = call_resp.json()
+    text = result["result"]["content"][0]["text"]
+    data = json.loads(text)
+    assert data["file_path"] == "dir/sub/file.txt"
+
+
+@pytest.mark.anyio
+async def test_mcp_form_data() -> None:
+    from fastapi import Form
+
+    app = FastAPI(mcp_url="/mcp")
+
+    @app.post("/submit", summary="Submit form")
+    async def submit_form(
+        name: str = Form(),
+        age: int = Form(),
+    ) -> dict[str, Any]:
+        return {"name": name, "age": age}
+
+    async with make_client(app) as client:
+        tools = await _list_tools(client, "/mcp")
+        form_tool = next((t for t in tools if "submit_form" in t["name"]), None)
+        assert form_tool is not None, "Form route should appear as MCP tool"
+        props = form_tool["inputSchema"]["properties"]
+        assert "name" in props, "Form field 'name' should be a top-level tool property"
+        assert "age" in props, "Form field 'age' should be a top-level tool property"
+        assert "body" not in props, "Form fields should not be nested under 'body'"
+
+        call_resp = await _mcp_post(
+            client,
+            "/mcp",
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": form_tool["name"],
+                    "arguments": {"name": "Alice", "age": 30},
+                },
+            },
+        )
+    assert call_resp.status_code == 200
+    result = call_resp.json()
+    text = result["result"]["content"][0]["text"]
+    data = json.loads(text)
+    assert data["name"] == "Alice"
+    assert data["age"] == 30
